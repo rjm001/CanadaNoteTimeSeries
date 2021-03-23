@@ -1,0 +1,684 @@
+---
+title: "Data Analysis for Demand During Crises"
+author: "Ryan Martin"
+date: "June 2, 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=80),tidy=TRUE)
+knitr::opts_chunk$set(cache = TRUE)
+# Original saved in C:\Users\mrya\Desktop\BNDS\Analysis\WithdrawalDepositCovidAnalysis
+```
+
+# Read In Data
+
+```{r readindata, echo = FALSE}
+# Reading in the data
+
+library(pacman)
+p_load(haven, tidyverse, ggplot2,sjlabelled, lubridate, 
+  readxl, xtable, gapminder, kable, kableExtra, RColorBrewer,zoo)
+p_load(astsa)
+my_folder <- here("data")
+my_tex_folder = here("LiabilitiesFigures")  
+
+datliabl=read_csv(paste(my_folder, "NICMonthEndTimeSeriesfromLiabilities.csv" , sep="/"))
+
+
+p_load(zoo, lubridate)
+filter = dplyr::filter
+datliabl = datliabl %>% filter(year(date)>= 1998) %>% filter(year(date) <2021)
+datliabl = datliabl %>% mutate(net_withdrawal = NIC - dplyr::lag(NIC))
+datliabl = datliabl %>% mutate(year_mon = as.yearmon(date)) 
+
+financial_events <- tibble(
+  date = as_date(c("2020-03-12",
+     "2008-09-01", "2009-09-01", #Lehman Bankruptcy to 2000 ARRA (American Recovery and Reinvestment Act) could also use March 6 2009 as nadar of down jones as end
+     "2001-09-01", "2002-01-01",
+     "1998-10-01", "2000-01-01", #Year 2000 Information and Readiness Disclosure Act to start of new year
+     "1998-01-04", "1998-03-01" #Ice storm start is January 4th when formed. End was unclear. The power outage lasted several weeks for some places, or even several months. https://en.wikipedia.org/wiki/January_1998_North_American_ice_storm
+     )),
+  Event_Name = c("Pandemic start", 
+    "GFC start", "GFC end",
+    "Sept 11 start", "Sept 11 end",
+    "Y2K start", "Y2K end",
+    "Ice Storm start", "Ice Storm end"
+))
+
+datagg = datliabl
+
+
+```
+
+
+
+```{r}
+
+ts_dat = ts(datagg)
+# View(ts_dat)
+plot(ts_dat)
+# it looks like net_withdrawal is more stable
+# than weekly nic percent change
+simple_ts = datagg %>% select(net_withdrawal)
+simple_ts = ts(simple_ts)#ts(simple_ts, start = datagg$date[1], end=datagg$date[nrow(datagg)])
+plot(simple_ts)
+ 
+```
+
+Dec 1999- Jan 2000 stand out as a large spike in net withdrawals at the monthly level.   
+
+
+Looking at the periodogram, what can we conclude?
+
+
+
+
+```{r}
+
+#periodogram
+p_load(astsa)
+simple_ts = simple_ts[!is.na(simple_ts)]
+dat.per = mvspec(simple_ts, log="n") #n.used=1200, roughly 23 years
+
+
+year_harmonics = 1:6/12
+year_multiples = as.character(1:6)#paste("Year Harmonic", as.character(1:12), sep = " ")
+year_harmonic_tib = tibble(year_harmonics, year_multiples)
+
+dat4plot= tibble(frequency = dat.per$freq, spectogram = dat.per$spec)
+ggplot(dat4plot) + geom_line(aes(x=frequency, y =spectogram)) +
+  geom_vline(xintercept = year_harmonics, color= year_multiples) +
+  ggtitle("Periodogram of Net Withdrawals 1998-2020 with Colored Year Harmonics")
+ggsave( paste("RawNoteWithdrawalPeriodogramWithColors.jpg", sep = ""),
+    path = paste(my_tex_folder, "monthly", sep = "/"))
+
+
+ggplot(dat4plot) + geom_line(aes(x=frequency, y =spectogram)) + ggtitle("Tapered Periodogram of Net Withdrawals 1998-2020")
+ggsave( paste("RawNoteWithdrawalPeriodogramNoColors.jpg", sep = ""),
+    path = paste(my_tex_folder, "monthly", sep = "/"))
+
+
+
+# adding a taper
+#periodogram
+dat.per.taper = mvspec(simple_ts, taper=.1, log="no") #n.used=1200, roughly 23 years
+
+
+dat4plottaper= tibble(frequency = dat.per.taper$freq, spectogram = dat.per.taper$spec)
+ggplot(dat4plottaper) + geom_line(aes(x=frequency, y =spectogram)) +
+  geom_vline(xintercept = year_harmonics, color= year_multiples) + ggtitle("Tapered Periodogram With Colored, 1-Year Harmonics")
+ggsave( paste("RawNoteWithdrawalPeriodogram.jpg", sep = ""),
+    path = paste(my_tex_folder, "monthly", sep = "/"))
+
+dat4plottaper= tibble(frequency = dat.per.taper$freq, spectogram = dat.per.taper$spec)
+ggplot(dat4plottaper) + geom_line(aes(x=frequency, y =spectogram))
+
+
+#looking at logged version. not very helpful
+dat.perlog = mvspec(simple_ts, log="yes") #n.used=1200, roughly 23 years
+
+
+```
+
+
+
+Note that the Ljung-Box statistic is a measure of the sum of the autocorrelation of the errors up to lag H. Values below the dotted line suggest there is still auto-correlation left in the errors. 
+
+```{r}
+p_load(broom)
+datagg = datagg %>% mutate(year = year(date), month = month(date))
+reg1_out = lm(data=datagg, formula=net_withdrawal ~ as.factor(month) + year + I(year^2))
+
+logdat = datagg%>% mutate(log_net_lag_nic = log(NIC/lag(NIC)))
+reg_log_out = lm(data=logdat, formula=log_net_lag_nic ~ month + year + I(year^2))
+# plot(reg_log_out) #residuals for this seem much wakier
+plot(reg1_out)
+p_load(BETS)
+
+plot(reg1_out, which=1:6)
+
+######################
+# Try forecasted vs true as nic
+forecast_nic =  tibble(date=datagg$date[-1], fitted_net_withdrawal =  reg1_out$fitted.values) %>% mutate(fitted_nic = cumsum(fitted_net_withdrawal))
+
+datagg=datagg %>% mutate(Year = as_character(year))
+netwithdrawal_pred_1999= augment(reg1_out, newdata= datagg %>% filter(year==2019))
+ggplot(netwithdrawal_pred_1999, aes(x = date, y = .fitted)) + geom_line() + geom_line(data=netwithdrawal_pred_1999,
+  aes(x=date, y = net_withdrawal), color="red") + ylab("Net Withdrawal") + 
+  ggtitle("Predicted Net Withdrawal in Red vs True for 1999")
+ggsave( paste("PredictedvsTrueNetWithdrawal1999.jpg", sep = ""),
+    path = paste(my_tex_folder, "monthly", sep = "/"))
+
+
+
+#datagg = datagg %>% mutate(month = as.numeric(week))
+ggplot(datagg, aes(x=month, y = net_withdrawal, color=Year ))+ 
+  geom_point()  + 
+  geom_line(data = netwithdrawal_pred_1999, aes(x = month, y = .fitted), size=1.5, color="black" ) + ylab("Net Withdrawal (Millions CAD)") +
+  ggtitle("Seasonally Predicted 2019 vs True Net Withdrawals All Years")
+ggsave( paste("PredictedvsTrueNetWithdrawalAllYears.jpg", sep = ""),
+    path = paste(my_tex_folder, "monthly", sep = "/"))
+
+
+
+
+true_and_forecast = left_join(datagg, forecast_nic)
+options(dplyr.width = Inf)
+gap = true_and_forecast$NIC[2] - true_and_forecast$fitted_nic[2]
+true_and_forecast = true_and_forecast %>% mutate(
+  fitted_nic_cor = fitted_nic + gap)
+ggplot(true_and_forecast, aes(x=date, y = fitted_nic_cor)) + geom_point() + geom_point(aes(x=date, y = NIC), color="red") + 
+  ggtitle("Seasonal Fit to Notes in Circulation Data: True in Red, Forecast in Black")
+ggsave( paste("SeasonalFitToNIC.jpg", sep = ""),
+    path = paste(my_tex_folder, "monthly", sep = "/"))
+
+# It seems that it fit the outliers too well there in March 2020. I ought to adjust that a little.
+
+#Maybe I should have predicted the NIC and then backed out
+# the differences?
+
+# Now, working on the residuals
+# Obviously, don't interpret any of the coefficients too literally
+# from here on out because already used some degrees of freedom
+simple_ts_fit = ts(reg1_out$residuals)
+
+#periodogram
+dat.per = mvspec(simple_ts_fit, log="no") #n.used=1200, roughly 23 years
+
+
+# adding a taper
+#periodogram
+dat.per.taper = mvspec(simple_ts_fit, taper=.1, log="no")
+dat4plottaper= tibble(frequency = dat.per.taper$freq, spectogram = dat.per.taper$spec)
+ggplot(dat4plottaper) + geom_line(aes(x=frequency, y =spectogram)) +
+  geom_vline(xintercept = year_harmonics, color= year_multiples) + ggtitle("Tapered Periodogram With Colored, 1-Year Harmonics")
+
+
+# now redoing the sarima
+# recall its ARIMA(p,d,q) x (P,D,Q)_s
+# So lets try(2,0,1) x (1,0,1)_{52}
+acf2(simple_ts_fit) # looks like just seasonal left
+model1 = sarima(simple_ts_fit,p=5,d=0,q=0,
+    P=1,D=0,Q=0,S=54,no.constant=TRUE)
+#plot(model1)
+
+acf2(simple_ts_fit,max.lag = 60)
+model2 = sarima(simple_ts_fit,5,0,5,no.constant = TRUE) # 
+  # some of the AR and MA terms are significant
+  # annoying it won't give
+
+model3 = sarima(simple_ts_fit,3,0,2,no.constant = TRUE)
+  # none of the terms here are that significant
+
+k=4
+# Detecting large values in residuals
+threshold = k*var(model2$degrees_of_freedom)
+ts_out =arima(simple_ts_fit, order=c(3,0,2),include.mean = FALSE)
+plot(ts_out$residuals)
+acf2(ts_out$residuals)
+
+# So, honestly, it seems like I don't even really need the 
+# Extra time series stuff. The trended one is fine
+# Just look for large residuals there!
+
+# Detecting large values in residuals
+k=4
+threshold = k*sd(simple_ts_fit)
+large_resid = which(abs(simple_ts_fit) > threshold)
+datagg$date[large_resid]
+
+# what about *persistent positive sequences?
+
+
+resid_tab = tibble(date=datagg$date[-1],
+  resid=as.numeric(simple_ts_fit))
+resid_tab = resid_tab %>% mutate(fivelagsum =    
+  resid+dplyr::lag(resid,n=1) +
+  dplyr::lag(resid,n=2) + dplyr::lag(resid,n=3) +
+    dplyr::lag(resid,n=4) + dplyr::lag(resid,n=5),
+  fourlagsum = resid+dplyr::lag(resid,n=1) +
+  dplyr::lag(resid,n=2) + dplyr::lag(resid,n=3) +
+    dplyr::lag(resid,n=4),
+  threelagsum = resid+dplyr::lag(resid,n=1) +
+  dplyr::lag(resid,n=2) + dplyr::lag(resid,n=3),
+  twolagsum = resid+dplyr::lag(resid,n=1) +
+  dplyr::lag(resid,n=2),
+  onelagsum = resid+dplyr::lag(resid,n=1) +
+  dplyr::lag(resid,n=2))
+
+my_paired_colors = brewer.pal(n = 12, "Paired")
+quick_color = my_paired_colors[c(6,5,2,1,10,4,3,7,8)]
+
+
+# here you really see 2000 and 2020 stand out
+ggplot(resid_tab, aes(x=date, y = fivelagsum)) + geom_point() +
+  ggtitle(" Cumulative Summation of Residual and Lags up to Five vs Date") +
+  geom_vline(data= financial_events, 
+    aes( xintercept = date, label = Event_Name, 
+      color = Event_Name), wt = 3.5 ) + 
+  scale_color_manual(values = quick_color) + ylab("")
+ggsave( paste("FiveLagSum.jpg", sep = ""),
+    path = paste(my_tex_folder, "monthly", sep = "/")) 
+
+ggplot(resid_tab, aes(x=date, y = fourlagsum)) + geom_point() +
+  ggtitle(" Cumulative Summation of Residual and Lags up to Fourth vs Date")
+ggsave( paste("FourLagSum.jpg", sep = ""),
+    path = paste(my_tex_folder, "monthly", sep = "/"))
+
+ggplot(resid_tab, aes(x=date, y = threelagsum)) + geom_point()+
+  ggtitle(" Cumulative Summation of Residuals and Lags up to Third vs Date")
+ggsave( paste("ThreeLagSum.jpg", sep = ""),
+    path = paste(my_tex_folder, "monthly", sep = "/"))
+
+ggplot(resid_tab, aes(x=date, y = twolagsum)) + geom_point()+
+  ggtitle(" Cumulative Summation of Residuals and Lag up to Second vs Date")
+ggsave( paste("TwoLagSum.jpg", sep = ""),
+    path = paste(my_tex_folder, "monthly", sep = "/"))
+
+
+ggplot(resid_tab, aes(x=date, y = onelagsum)) + geom_point() +
+  ggtitle(" Cumulative Summation of Residual and One Residual Lag vs Date")  +
+  geom_vline(data= financial_events, 
+    aes( xintercept = date, label = Event_Name, 
+      color = Event_Name), wt = 3.5 ) + 
+  scale_color_manual(values = quick_color) + ylab("")
+ggsave( paste("OneLagSum.jpg", sep = ""),
+    path = paste(my_tex_folder, "monthly", sep = "/"))
+
+
+
+# here you really see 2000 and 2020 stand out
+ggplot(resid_tab, aes(x=date, y = resid)) + geom_point() +
+  ggtitle("Residuals After Controlling for Seasonal Effects vs Date") +
+  geom_vline(data= financial_events, 
+    aes( xintercept = date, label = Event_Name, 
+      color = Event_Name), wt = 3.5 ) + 
+  scale_color_manual(values = quick_color) + ylab("")
+ggsave( paste("ResidualsAfterSeasonalAdj.jpg", sep = ""),
+    path = paste(my_tex_folder, "monthly", sep = "/")) 
+
+
+p_load(stargazer)
+stargazer(reg1_out)
+```
+
+Note that, since there is no "return to trend" yet in NIC, the nonparametric fit sees the maintained pandemic behavior as the trend. 
+
+
+
+
+```{r}
+ 
+p_load(lme4, splines, nlme, earth,jtools)
+datagg = datagg %>% mutate(Month = as_factor(month))
+datagg = datagg %>% drop_na()
+fit1 <- earth(net_withdrawal ~ year + Month, data=datagg,pmethod="none")
+summary(fit1)
+
+
+my_knots = quantile(datagg$year, p = c(.5))
+fit2 = lm(net_withdrawal~bs(year, knots=my_knots) + Month, data=datagg) 
+summary(fit2)
+
+
+my_forecast2 = stats::predict(fit1, newdata=datagg)
+forecast_nic_spline =  tibble(date=datagg$date, fitted_net_withdrawal = my_forecast2) %>% mutate(fitted_nic = cumsum(fitted_net_withdrawal))
+
+#netwithdrawal_pred_1999_spl= datagg %>% mutate(.fitted = fit1$fitted.values) %>% filter(year == 2019)    
+#ggplot(netwithdrawal_pred_1999_spl, aes(x = date, y = .fitted)) + geom_line() + geom_line(data=netwithdrawal_pred_1999_spl,
+#  aes(x=date, y = net_withdrawal), color="red") + ylab("Net Withdrawal") + 
+#  ggtitle("Predicted Net Withdrawal in Red vs True for 1999")
+#ggsave( paste("PredictedvsTrueNetWithdrawal1999spl.jpg", sep = ""),
+#    path = paste(my_tex_folder, "monthly", sep = "/"))
+
+datagg = datagg %>% mutate(month = as.numeric(month))
+datagg=datagg %>% mutate(Year = as_character(year))
+
+####################
+# Now with Knotted
+#####################
+
+month_names = paste("Month", as.character(2:12), sep = " ")
+
+gen_plots <- function(my_model, my_name) {
+
+    
+  names(my_model$coefficients) = c("Intercept", month_names, "year", "(year)^2")
+  plot1 = jtools::plot_summs(my_model, omit.coefs = 
+      c("(Intercept)", "year","(year)^2" ), ci_level = .95) + 
+    ggtitle("Weekly Fixed Effects")
+  plot1
+  ggsave( paste("MonthlyCoefficientPlot", my_name, ".jpg", sep = ""),
+      path = paste(my_tex_folder, "monthly", sep = "/"))
+  
+  
+  my_forecast = stats::predict(my_model, newdata=datagg)
+  forecast_nic_func =  tibble(date=datagg$date, 
+    fitted_net_withdrawal = my_forecast) %>% 
+    mutate(fitted_nic = cumsum(fitted_net_withdrawal))
+  
+  netwithdrawal_pred_1999_spl= datagg %>% 
+    mutate(.fitted = my_model$fitted.values) %>% 
+    filter(year == 2019)
+  
+  netwithdrawal_pred_1999_spl = netwithdrawal_pred_1999_spl %>%
+    mutate(.fitted = stats::predict(my_model, newdata=datagg %>% filter(year==2019)))
+  plot2 = ggplot(netwithdrawal_pred_1999_spl, aes(x = date, y = .fitted)) + 
+    geom_line() + geom_line(data=netwithdrawal_pred_1999_spl,
+    aes(x=date, y = net_withdrawal), color="red") + ylab("Net Withdrawal") + 
+    ggtitle("Predicted Net Withdrawal in Red vs True for 1999")
+  plot2 
+  ggsave( paste("PredictedvsTrueNetWithdrawal1999", my_name, ".jpg", sep = ""),
+      path = paste(my_tex_folder, "monthly", sep = "/"))
+  
+  
+  plot3 = ggplot(datagg, aes(x=month, y = net_withdrawal, color=Year ))+ 
+    geom_point()  + 
+    geom_line(data = netwithdrawal_pred_1999_spl, aes(x = month, y = .fitted),
+      size=1.5, color="black" ) + ylab("Net Withdrawal (Millions CAD)") +
+    ggtitle("Seasonally Predicted 2019 vs True Net Withdrawals All Years")
+  plot3
+  ggsave( paste("PredictedvsTrueNetWithdrawalAllYears", my_name, 
+    ".jpg", sep = ""),
+    path = paste(my_tex_folder, "monthly", sep = "/"))
+  
+  true_and_forecast_spl = left_join(datagg, forecast_nic_func)
+  gap_spl2 = true_and_forecast_spl$NIC[1] - true_and_forecast_spl$fitted_nic[1]
+  true_and_forecast_spl = true_and_forecast_spl %>% mutate(
+    fitted_nic_cor = fitted_nic + gap)
+  plot4 = ggplot(true_and_forecast_spl, aes(x=date, y = fitted_nic_cor)) + 
+    geom_point() + geom_point(aes(x=date, y = NIC), color="red") +
+    ggtitle("Seasonal Fit to Notes in Circulation Data: True in Red, Forecast in Black")
+  plot4
+  ggsave( paste("SeasonalFitToNICspl", my_name, ".jpg", sep = ""),
+      path = paste(my_tex_folder, "monthly", sep = "/"))
+  return(list(plot2, plot3, plot4))
+}
+
+
+myfirstlist = gen_plots(fit1,"earth_model")
+mysecondlist = gen_plots(fit2,"one_knot_splines")
+myfirstlist[1]
+myfirstlist[2]
+myfirstlist[3]
+mysecondlist[1]
+mysecondlist[2]
+mysecondlist[3]
+
+
+```
+
+
+
+__Something else to do is look at residuals^2 *or* the changes in NIC squared.__ I saw with the DJIA that the original series didn't exhibit much Autocorrelation but the square of the series did, which made it a good candidate for GARCH.
+
+```{r}
+acf2(simple_ts_fit^2)
+Seasonal_Residuals=simple_ts_fit
+acf2(Seasonal_Residuals,max.lag = 60)
+Square_Of_Seasonal_Residuals = simple_ts_fit^2
+acf2(Square_Of_Seasonal_Residuals)
+# Looks pretty autocorrelated! I should fit a GARCH here just to see!
+simple_ts_fit.sq = simple_ts_fit^2/(1e16)
+simple_ts_fit_scale = simple_ts_fit/1e8
+p_load(xts, fGarch)
+# note that the arima modeling fails very poorly when numbers
+# are large! hessian matrix fails. had to scale by 1e16 to 
+# get it to evaluate. once scale, works well.
+arima.fit.sq = arima(simple_ts_fit.sq + 0, order=c(3,0,0))
+ #ar(1) and ar(3) are significant
+
+out.garch <- garchFit(~ arma(1,0) + garch(3,1) , data=simple_ts_fit_scale, cond.dist="std") 
+plot(out.garch)
+summary(out.garch) # looks ok, but lots of NAs
+
+
+# this one looks pretty good!
+out.garch2 <- garchFit(~ arma(3,0) + garch(3,0) , data=simple_ts_fit_scale, cond.dist="std") 
+plot(out.garch2) 
+summary(out.garch2) # only issue is AR(3) not signif
+ # and GARCh higher than one not significant. try simpler model
+
+
+
+# this one looks pretty good!
+out.garch2.5 <- garchFit(~ arma(2,0) + garch(1,0) , data=simple_ts_fit_scale, cond.dist="std") 
+plot(out.garch2.5) 
+summary(out.garch2.5) #looks ok
+
+
+out.garch3 <- garchFit(~ arma(1,1) + garch(1,0) , data=simple_ts_fit_scale, cond.dist="std") #keep getting 
+summary(out.garch3) #fit here much better! all terms highly signif.
+plot(out.garch3) # looks about same as AR(3)
+
+
+# Trying a heavier MA model
+out.garch4 <- garchFit(~ arma(1,3) + garch(1,3) , data=simple_ts_fit_scale, cond.dist="std") #keep getting 
+summary(out.garch4) # the heavier MA is not significant at all
+  # for GARCh part. looks fine for rest. should reduce ma in
+  # garch
+plot(out.garch4)
+
+
+
+# Trying a heavier MA model
+out.garch5 <- garchFit(~ arma(2,3) + garch(2,0) , data=simple_ts_fit_scale, cond.dist="std") 
+summary(out.garch5) #starting to get some errors in this
+plot(out.garch5)
+
+
+out.garch6.5 <- garchFit(~ arma(1,3) + garch(2,0) , data=simple_ts_fit_scale, cond.dist="std") 
+summary(out.garch6) # garch(1,0) probably better
+plot(out.garch6)
+
+
+out.garch6 <- garchFit(~ arma(1,3) + garch(1,0) , data=simple_ts_fit_scale, cond.dist="std") 
+summary(out.garch6) # garch(1,0)
+plot(out.garch6)
+
+out.garch8 <- garchFit(~ arma(1,5) + garch(1,0) , data=simple_ts_fit_scale, cond.dist="std") 
+summary(out.garch8) # garch(1,0)
+plot(out.garch8) # AIC and BIC back up
+
+
+out.garch7 <- garchFit(~ arma(1,4) + garch(1,0) , data=simple_ts_fit_scale, cond.dist="std") 
+summary(out.garch7) # garch(1,0)
+plot(out.garch7)
+
+# I would say overall, I like 2.5, 3, 6 oor 7 is best.
+# AIC and BIC prefer 7. So, lets go with that.
+
+# don't quite understand why access with dollar rather than 
+my_garch_fit = tibble(date = datagg$date, conditional_sd =
+    out.garch7@sigma.t, final_residuals = out.garch7@residuals, 
+    conditional_var = out.garch7@h.t)
+
+
+ggplot(my_garch_fit, aes(x=date, y = conditional_sd)) + geom_line() + ggtitle("GARCH Conditional Standard Deviation Estimates") + ylab("Conditional Standard Deviation")
+ggsave( paste("GarchSDwithoutTimings.jpg", sep = ""),
+    path = paste(my_tex_folder, "monthly", sep = "/"))
+
+
+
+ggplot(my_garch_fit, aes(x=date, y = conditional_var)) + geom_line() + ggtitle("GARCH Conditional Variance Estimate") + ylab("Conditional Standard Deviation") 
+ggsave( paste("GarchVarwithoutTimings.jpg", sep = ""),
+  path = paste(my_tex_folder, "monthly", sep = "/")) 
+
+
+
+#probably that spike on the residuals comes from the lack of persistence of the high values!
+ggplot(my_garch_fit, aes(x=date, y = final_residuals)) + geom_line() + ggtitle("Final Residuals vs Date")
+
+
+
+my_paired_colors = brewer.pal(n = 12, "Paired")
+quick_color = my_paired_colors[c(6,5,2,1,10,4,3,7,8)]
+ggplot(my_garch_fit, aes(x=date, y = conditional_sd)) + 
+  geom_line() + ggtitle("GARCH Conditional Standard Deviation Estimates") +
+  geom_vline(data= financial_events, 
+    aes( xintercept = date, label = Event_Name, 
+      color = Event_Name), wt = 3.5 ) + 
+  scale_color_manual(values = quick_color) + ylab("Conditional Standard Deviation")
+ggsave( paste("GarchSDwithTimings.jpg", sep = ""),
+    path = paste(my_tex_folder, "monthly", sep = "/"))
+
+
+ggplot(my_garch_fit, aes(x=date, y = conditional_var)) + geom_line() + ggtitle("GARCH Conditional Variance Estimate") + ylab("") + geom_vline(data= financial_events, 
+    aes( xintercept = date, label = Event_Name, 
+      color = Event_Name), wt = 3.5 ) + 
+  scale_color_manual(values = quick_color) + ylab("Conditional Variance")
+  
+ggsave( paste("GarchVarwithTimings.jpg", sep = ""),
+  path = paste(my_tex_folder, "monthly", sep = "/")) 
+
+
+```
+
+
+*Another idea I can try is to measure the tail of persistance. for example, looking at the sum as the sequences is 2-15. See the length of the sequence when it peaks and when the peaks occur. Think about if that's meaningful. I wonder if anyone has done a test like this before. I feel its a very natural idea.*
+
+
+
+*Also, try the threshhold models. This data looks non-Gaussian and non-Linear. Therefore, a TARMA or SETARMA model may be appropriate
+
+```{r}
+library(pacman)
+p_load(tsDyn)
+
+```
+
+
+
+# Generate Main Data and Source Functions
+
+```{r}
+
+#############################################
+# Data
+#############################################
+
+year_pairs = tibble(
+    start_year = c(1998, 1998, 2005, 2011, 2016),
+    end_year = c(2020, 2004, 2010, 2015, 2020))
+
+
+############################################
+# Functions
+############################################
+
+plot_NIC_by_year <- function(start_year, end_year) {
+  getPalette = colorRampPalette(brewer.pal(n=9, "Set1")) #can make 11?
+  colorCount = end_year - start_year + 1
+  pp = ggplot( datagg %>% filter(year>= start_year) %>% filter(year<=end_year) %>% mutate(Year = as_character(year)), aes(x = month, y = NIC/1e6, color = Year)) +
+    scale_color_manual(values = getPalette(colorCount)) + 
+    geom_point() + geom_line() + ylab("NIC (millions CAD)") +
+    ggtitle(paste("Monthly NIC by year from ", start_year, " to ", 
+      end_year, sep = "")
+    )
+}
+
+save_by_year <- function(start_year, end_year) {
+  ggsave( paste(
+    "NICbyMonth", start_year, "to", end_year, ".jpg", sep = ""),
+    path = paste(my_tex_folder, "monthly", sep = "/"))
+}
+
+plot_NIC_time_series <- function(start_year, end_year) {
+  my_paired_colors = brewer.pal(n = 12, "Paired")
+  financial_events_local = financial_events %>% filter(
+    year(date)>= start_year) %>% filter(year(date)<=end_year)
+  Event_count = nrow(financial_events_local)
+  quick_color = my_paired_colors[c(6,5,2,1,10,4,3,7,8)]
+  quick_color = quick_color[1:Event_count]
+  pp = ggplot( datagg %>% filter(year>= start_year) %>% filter(year<=end_year), aes(x = date, y = NIC/1e6)) +
+    geom_point() + geom_smooth(color="grey") + 
+    ylab("NIC (Millions CAD)") + 
+  ggtitle("NIC Over Time") +
+  geom_vline(data= financial_events_local, aes( xintercept = date, label = Event_Name, color = Event_Name), wt = 3.5 ) + 
+  scale_color_manual(values = quick_color) + ggtitle(
+    paste("Monthly NIC from ", start_year, " to ", end_year, sep = "")
+  )
+}
+
+save_time_series <- function(start_year, end_year){
+    ggsave( paste(
+    "NICtimeseries", start_year, "to",  end_year, ".jpg", sep = ""),
+    path = paste(my_tex_folder, "monthly", sep = "/"))
+}
+
+
+generate_all_plots <- function(plot_generator) {
+  year_pairs =.GlobalEnv$year_pairs 
+    #get(year_pairs, envir = .GlobalEnv)
+  force(year_pairs)
+  
+  # environment(plot_generator) = .GlobalEnv
+   #my_plots = year_pairs %>% transmute(
+   # my_plots= list(plot_generator(begin_year,final_year)))
+  my_plot_list = list()
+  for (i in 1:nrow(year_pairs)) {
+    my_plot_list[[i]] = plot_generator(year_pairs$start_year[i],
+      year_pairs$end_year[i])
+  }
+  my_plot_list
+}
+
+print_and_save_them_all = function(my_plot_list, plot_type="Forgot") {
+  if (plot_type == "by_year") {
+    for (counter in 1:length(my_plot_list)) {
+      force(counter)
+      print(my_plot_list[[counter]])
+      save_by_year(year_pairs$start_year[counter],
+        year_pairs$end_year[counter] )
+    }  
+  } else if (plot_type == "time_series") {
+    for (counter in 1:length(my_plot_list)) {
+      force(counter)
+      print(my_plot_list[[counter]])
+      save_time_series(year_pairs$start_year[counter],
+        year_pairs$end_year[counter] )
+    }  
+    
+  } else {
+    print("Please provide either \"by_year\" or \"time_series\" as a plot type")
+  }
+}
+
+
+plot_them_all = function(my_plot_list){
+  for (each_plot in my_plot_list) plot(each_plot)
+} 
+
+
+#####################
+# Generating Output
+####################
+
+by_year_plot = generate_all_plots(plot_NIC_time_series)
+time_series_plot =  generate_all_plots(plot_NIC_by_year)
+
+
+###########
+# plot and save
+print_and_save_them_all(by_year_plot, plot_type = "by_year")
+print_and_save_them_all(time_series_plot, plot_type = "time_series")
+
+# or, a quick view
+
+###########
+# generating plots without saving 
+plot_them_all(by_year_plot)
+plot_them_all(time_series_plot)
+
+
+
+quick_plots = generate_all_plots(plot_NIC_by_year)
+plot_them_all(quick_plots)
+
+
+```
+
