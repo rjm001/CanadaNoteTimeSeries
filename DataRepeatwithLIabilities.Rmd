@@ -367,9 +367,140 @@ ggsave( paste("SeasonalFitToNICspl2.jpg", sep = ""),
 
 
 ```{r}
+ 
+p_load(lme4, splines, nlme, earth,jtools)
+#datagg = datagg %>% mutate(Week = as_factor(month))
+datagg = datagg %>% drop_na()
+fit1 <- earth(net_withdrawal ~ year + Week, data=datagg,pmethod="none")
+summary(fit1)
+
+
+my_knots = quantile(datagg$year, p = c(.5))
+fit2 = lm(net_withdrawal~bs(year, knots=my_knots) + Month, data=datagg) 
+summary(fit2)
+
+
+my_forecast2 = stats::predict(fit1, newdata=datagg)
+forecast_nic_spline =  tibble(date=datagg$date, fitted_net_withdrawal = my_forecast2) %>% mutate(fitted_nic = cumsum(fitted_net_withdrawal))
+
+
+####################
+# Now with Knotted
+#####################
+
+week_names = paste("Week", as.character(2:53), sep = "")
+
+gen_plots <- function(my_model, my_name) {
+  
+  if( class(my_model)=="earth") {
+    temp = row.names(my_model$coefficients)
+    omit_these_coefs = rep("name", length(temp) - 52)
+    count = 1
+    for (my_coef_name in temp) {
+      if (!isTRUE(as.logical(grep(pattern="Week", my_coef_name)))) {
+        omit_these_coefs[count] = my_coef_name
+        count = count + 1
+      }
+    }
+  } else {
+    temp = names(my_model$coefficients)
+    omit_these_coefs = rep("name", length(temp) - 52)
+    count = 1
+    for (my_coef_name in temp) {
+      if (!isTRUE(as.logical(grep(pattern="Week", my_coef_name)))) {
+        omit_these_coefs[count] = my_coef_name
+        count = count + 1
+      }
+    }
+  }
+  if (class(my_model)!="earth") {
+    # earth package does not play well with other model output packages. too bad
+    # looks like just calls (tidy(my_model))...)
+  plot1 = jtools::plot_summs(my_model, omit.coefs = omit_these_coefs,
+    ci_level = .95) + ggtitle("Weekly Fixed Effects")
+  plot1
+  ggsave( paste("WeeklyCoefficientPlot", my_name, ".jpg", sep = ""),
+      path = paste(my_tex_folder, "weekly", sep = "/"))
+  } else {
+  plot1 = ggplot(tibble(coef_names = names(
+    my_model$coefficients[!(row.names(my_model$coefficients) %in% omit_these_coefs), ]),
+    coef_values = my_model$coefficients[!(row.names(my_model$coefficients) %in% 
+      omit_these_coefs), ]),
+      aes(x = coef_names, y = coef_values)) + geom_point() + 
+    ggtitle("Weekly Fixed Effects") + xlab("Week") + ylab("Millions CAD")
+  plot1
+  ggsave( paste("WeeklyCoefficientPlot", my_name, ".jpg", sep = ""),
+      path = paste(my_tex_folder, "weekly", sep = "/"))
+  }
+  
+  my_forecast = stats::predict(my_model, newdata=datagg)
+  forecast_nic_func =  tibble(date=datagg$date, 
+    fitted_net_withdrawal = my_forecast) %>% 
+    mutate(fitted_nic = cumsum(fitted_net_withdrawal))
+  
+  #netwithdrawal_pred_1999_spl= datagg %>% 
+  #  mutate(.fitted = my_model$fitted.values) %>% 
+  #  filter(year == 2019)
+
+  netwithdrawal_pred_1999_spl= datagg %>% 
+    mutate(.fitted = my_forecast) %>% 
+    filter(year == 2019)
+  
+  plot2 = ggplot(netwithdrawal_pred_1999_spl, aes(x = date, y = .fitted)) + 
+    geom_line() + geom_line(data=netwithdrawal_pred_1999_spl,
+    aes(x=date, y = net_withdrawal), color="red") + ylab("Net Withdrawal") + 
+    ggtitle("Predicted Net Withdrawal in Red vs True for 1999")
+  plot2 
+  ggsave( paste("PredictedvsTrueNetWithdrawal1999", my_name, ".jpg", sep = ""),
+      path = paste(my_tex_folder, "weekly", sep = "/"))
+  
+  
+  plot3 = ggplot(datagg, aes(x = week, y = net_withdrawal, color=Year ))+ 
+    geom_point()  + 
+    geom_line(data = netwithdrawal_pred_1999_spl, aes(x = week, y = .fitted),
+      size=1.5, color="black" ) + ylab("Net Withdrawal (Millions CAD)") +
+    ggtitle("Seasonally Predicted 2019 vs True Net Withdrawals All Years")
+  plot3
+  ggsave( paste("PredictedvsTrueNetWithdrawalAllYears", my_name, 
+    ".jpg", sep = ""),
+    path = paste(my_tex_folder, "weekly", sep = "/"))
+  
+  true_and_forecast_spl = left_join(datagg, forecast_nic_func)
+  gap_spl2 = true_and_forecast_spl$NIC[1] - true_and_forecast_spl$fitted_nic[1]
+  true_and_forecast_spl = true_and_forecast_spl %>% mutate(
+    fitted_nic_cor = fitted_nic + gap)
+  plot4 = ggplot(true_and_forecast_spl, aes(x=date, y = fitted_nic_cor)) + 
+    geom_point() + geom_point(aes(x=date, y = NIC), color="red") +
+    ggtitle("Seasonal Fit to Notes in Circulation Data: True in Red, Forecast in Black")
+  plot4
+  ggsave( paste("SeasonalFitToNICspl", my_name, ".jpg", sep = ""),
+      path = paste(my_tex_folder, "weekly", sep = "/"))
+  return(list(plot1, plot2, plot3, plot4))
+}
+
+
+myfirstlist = gen_plots(fit1,"earth_model") 
+mysecondlist = gen_plots(fit2,"one_knot_splines")
+myfirstlist[1]
+myfirstlist[2]
+myfirstlist[3]
+mysecondlist[1]
+mysecondlist[2]
+mysecondlist[3]
+mysecondlist[4]
+
+
+
+```
+
+
+```{r}
 # Now, working on the residuals
 # Obviously, don't interpret any of the coefficients too literally
 # from here on out because already used some degrees of freedom
+
+# Choosing spline model
+reg1_out = fit2
 simple_ts_fit = ts(reg1_out$residuals)
 
 #periodogram
@@ -565,7 +696,6 @@ plot(out.garch7)
 # I would say overall, I like 2.5, 3, 6 oor 7 is best.
 # AIC and BIC prefer 7. So, lets go with that.
 
-# don't quite understand why access with dollar rather than 
 my_garch_fit = tibble(date = datagg_short$date, conditional_sd =
     out.garch7@sigma.t, final_residuals = out.garch7@residuals, 
     conditional_var = out.garch7@h.t)
@@ -616,7 +746,7 @@ ggsave( paste("GarchVarwithTimings.jpg", sep = ""),
 
 
 
-*Also, try the threshhold models. This data looks non-Gaussian and non-Linear. Therefore, a TARMA or SETARMA model may be appropriate
+*Also, try the threshhold models. This data looks non-Gaussian and non-Linear. Therefore, a TARMA or SETARMA model may be appropriate*
 
 ```{r}
 library(pacman)
@@ -756,69 +886,6 @@ plot_them_all(quick_plots)
 ```
 
 
-## Looking at the Biggest Events
-```{r}
-
-## Select N largest and plot their relative sizes!
-# Then can do the olympics, where take the two biggest from each time period
-
-#View(datagg)
-
-#First, histograms
-ggplot(datagg, aes(x = weekly_NIC_percent_change)) + 
-  geom_histogram()
-
-ggplot(datagg, aes(x = net_withdrawal)) + 
-  geom_histogram()
-
-nrow(datagg) #1184 observations
-.05*1184 #so 60 represent 5%
-
-
-# Note, modern dplyr tools (such as slice_max)
-# Are not available on the banks outdated R software
-most_extreme_nic_percent = datagg %>% mutate(
-  abs_nic_per_change = abs(weekly_NIC_percent_change)) %>%
-  top_n(abs_nic_per_change, n=60)  %>% mutate(
-    Month = as.character(month(date))
-  )
-
-most_extreme_change_nic = datagg %>% mutate(
-  abs_nic_change = abs(net_withdrawal)) %>%
-  top_n(abs_nic_change, n=60) %>%  mutate(
-    Month = as.character(month(date)))
-
-p_load(ggthemes)
-my_pallette =  brewer.pal(n = 8, "Dark2")
-ggplot(most_extreme_nic_percent, aes(x = date, y = weekly_NIC_percent_change, color=Month)) + geom_point() + 
-  ggtitle("The 5% Most Extreme Week-Over-Week Percent Change in Net Withdrawals") + ylab("Percent") + 
-  scale_color_manual(values=my_pallette) + theme_igray()
-
-ggsave( "5PercentExtremePercentChange.jpg",
-    path = paste(my_tex_folder, "weekly", sep = "/"))
-
-
-ggplot(most_extreme_change_nic, aes(x = date, 
-  y = net_withdrawal/1e6, color=Month)) + geom_point() +
-  ggtitle("The 5% Most Extreme Net Withdrawals") + ylab("Millions CAD") +
-  scale_color_manual(values=my_pallette) + theme_igray()
-
-ggsave( "5PercentExtremeAbsoluteChange.jpg",
-    path = paste(my_tex_folder, "weekly", sep = "/"))
-
-
-## 
-
-```
-
-## Some Observations
-
-- It seems that Y2K saw a pretty large increase in net note withdrawals, as has the pandemic. GFC, too, but not quite as strong.
-- what about other crisis? Dotcom? Go back to 80s?
-- note that the choice of which crisis to designate a crisis is endogenous... but, maybe that's fine for forecasting
-- note that Y2K coincides with the typical end-of-the-year with withdrawal. Want to separate seasonality trends 
-- I guess one way to control for seasonality is just to add a term for week of the year, add a term for holidays, add a term for 
-
 
 ```{r extra}
 for (each_graph in quick_plots) {
@@ -859,426 +926,5 @@ ggsave("NICtimeseries2015to2020.jpg", path = paste(my_tex_folder, "weekly", sep 
 
 #plot_generator(start_year, end_year)
  
-```
-
-
-# Some Denomination Information
-
-- I want to take a difference-in-difference approach
-- Compare:
-  - Average net note withdrawals for 1998 vs December 1999 and January 2000 (excluding unfits)
-  - Average net note withdrawals for 2019 vs March and April 2000 (excluding unfits)
-  
-  
-
-```{r}
-
-# Aggregation by denomination
-getPalette = colorRampPalette(brewer.pal(n=9, "Set1")[-6])
-p_load(zoo)
-initial_1998_note_total_denom = 0 
-dataggdenom = datnet %>% arrange(date) %>%
-  group_by(year, week, date, denomination)  %>%
-  summarise(net_withdrawal_denom = -sum(signed_deposit)) %>% ungroup() %>%
-  arrange(date) %>% group_by(denomination) %>%
-  mutate(NIC_denom = initial_1998_note_total_denom+
-      cumsum(net_withdrawal_denom),
-    weekly_NIC_percent_change = net_withdrawal_denom/lag(NIC_denom)*100)
-
-
-dat = dataggdenom %>% ungroup %>% group_by(date, denomination) %>% 
-  mutate(Denomination= 
-      ifelse(denomination==0, "Unfit", as_character(denomination)),
-    Year = as_character(year),
-    Week = as_character(week)) %>% 
-  ungroup()
- 
-my_year_colors = brewer.pal(n=2020-2015+2, "Set3")[-2]
-my_year_colors = my_year_colors[c(1,2,6,4,5,3)]
-
-ggplot(datagg %>% dplyr::filter(year>=2015) %>% mutate(Year = as_character(year)), 
-  aes(x= week, y =NIC/1e9, color = Year))  + geom_point() +
-  geom_line() + ylab("Notes in Circulation (Billions CAD)") + 
-  scale_color_manual(values = my_year_colors) + 
-  ggtitle("Notes in Circulation by Year")
-
-ggsave(paste("NIC.png", sep = ""), path = paste(my_folder,
-  "MarkdownFigures", sep = "/"))
-
-Denom_List = dat %>% select(Denomination) %>% distinct() %>%
-  dplyr::filter(Denomination!="1000", Denomination!="Unfit") 
-  #1000 doesn't have any, don't need unfits
-
-# for some reason, ggplot will not connect the lines
-# if you let the months be factors 
-# (i.e. won't connect lines if put Month = ... month(, label==TRUE))
-filter = dplyr::filter
-plot_trend_denom_since <- function(start_year) { 
-  force(start_year)
-  colorCount = 2020-start_year+1
-  function(denom){
-    force(denom)
-    p <- ggplot(dat %>% ungroup() %>% 
-          dplyr::filter(Denomination==denom) %>% 
-          dplyr::filter(year>=start_year), 
-          aes(x=week, y = NIC_denom/1e9,
-              color=Year)) + geom_point()  + geom_line() +
-      ggtitle(paste("Value of ", denom, "s in Circulation Since 1998", sep = "")) +
-      ylab(paste("Value of ", denom, "s in Circulation Since 1998 (Billions CAD)", sep = "")) + xlab("Week") +
-    scale_color_manual(values = brewer.pal(n=colorCount+1, "Set3")[-2])
-    p
-  }
-}
-
-
-plots_denom_since_2010 = plot_trend_denom_since(2015)
-
-for (each_denom in Denom_List$Denomination){
-  print(plots_denom_since_2010(each_denom))
- # ggsave(paste("NICbyDenom", each_denom, "s.png", sep = ""), 
- # path = paste(my_folder, "MarkdownFigures", sep = "/"))
-}
-
-
-# plot showing percent change by week
-getPalette = colorRampPalette(brewer.pal(n=9, "Set1"))
-ggplot(dat %>% ungroup() %>% 
-          filter(year>=2020, Denomination!="Unfit"),
-          aes(x=date, y = weekly_NIC_percent_change,
-              color=Denomination)) + geom_point()  + geom_line() +
-      ggtitle("Percent Change in Notes in Circulation by Denomination in 2020") +
-      ylab("Percent") + xlab("Weeks of 2020") +
-  scale_color_manual(values = c("purple",
-      "orange", "forestgreen", "skyblue2", "red")) + theme(legend.position="bottom")
-
-ggsave("PercentChangeNotesInCircDenom2020.png", path = paste(my_folder, "MarkdownFigures", sep = "/"))
-
-#colors()
-
-colorCount = 15
-ggplot(dat %>% ungroup() %>% 
-          filter(year>=2018, Denomination!="Unfit") %>% 
-         mutate(denom_year = paste(Denomination, " in ", Year, sep = "")),
-          aes(x=week, y = weekly_NIC_percent_change,
-              color=denom_year)) + geom_point()  + geom_line() +
-      ggtitle("Percent Change in Notes in Circulation by Denomination Since 2018") +
-      ylab("Percent") + xlab("Weeks of Year") +
-  scale_color_manual(values = getPalette(colorCount))
-  #use getPalette to create colorRamp between colors
-
-
-ggsave("PercentChangeNotesInCircDenomSince2018.png", path = paste(my_folder, "MarkdownFigures", sep = "/"))
-
-## One with combined 5s and 10s, by request
-datagg5s10s = datnet %>% arrange(date) %>% mutate(Denomination= 
-      ifelse(denomination==0, "Unfit", as_character(denomination)),
-    Year = as_character(year),
-    Week = as_character(week)) %>% filter(Denomination=="5" | Denomination=="10") %>% 
-  group_by(year, Year, week, date)  %>%
-  summarise(net_withdrawal_5s10s = 
-    -sum(signed_deposit)) %>% ungroup() %>%
-  arrange(date) %>% mutate(NIC_5s10s = 0+
-      cumsum(net_withdrawal_5s10s),
-    weekly_NIC_percent_change_5s10s =
-    net_withdrawal_5s10s/lag(NIC_5s10s)*100)  %>% 
-  ungroup 
- 
-
-start_year=2015
-ggplot(datagg5s10s %>% 
-          filter(year>=start_year), 
-          aes(x=week, y = NIC_5s10s/1e9,
-              color=Year)) + geom_point()  + geom_line() +
-      ggtitle(paste("Combined Value of 5s and 10s in Circulation Since 1998", sep = "")) +
-      ylab(paste("Value of 5s and 10s in Circulation Since 1998 (Billions CAD)", sep = "")) + xlab("Week") +
-    scale_color_manual(values = brewer.pal(n=2020-2015+2, "Set3")[-2])
-
-    
-ggsave("CombinedNIC5sand10s.png", path = paste(my_folder, "MarkdownFigures", sep = "/"))
-```
-
-
-```{r}
-
-## Last one showing note levels in 2020
-
-ggplot(dat %>% filter(year==2020) %>% filter (denomination!=0), 
-       aes(x = Week, y = NIC_denom/1e9, fill = Denomination)) +
-  geom_bar(stat="identity") + scale_fill_manual(values = c("purple",
-      "orange", "forestgreen", "skyblue2", "red")) + 
-  ggtitle("Level of Notes in Circulation by Denomination, 2020") + ylab("Value of Notes in Circulation (Billions CAD) ") + xlab("Weeks of 2020")
-
-ggsave("NICDenomLevels.png", path = paste(my_folder, "MarkdownFigures", sep = "/"))
-
-## With Unfit
-ggplot(dat %>% filter(year==2020) %>% filter(week<14) , 
-       aes(x = week, y = NIC_denom/1e9, fill = Denomination)) +
-  geom_bar(stat="identity") + scale_fill_manual(values = c("purple",
-      "orange", "forestgreen", "skyblue2", "red", "black")) + 
-  ggtitle("Level of Notes in Circulation by Denomination, 2020") + ylab("Value of Notes in Circulation (Billions CAD)") + xlab("Weeks of 2020")
-
-
-# Adding Month information
-
-dataggdenom = mutate(dataggdenom, month = month(date))
-
-
-# Compare 2019 March-May vs 2020 March through May
-
-dat20192020denom = filter(dataggdenom, month>=3, month<=5, denomination!=0) %>% filter(denomination!=1000) %>%
-  group_by(year, denomination) %>% summarise(
-    agg_withdrawal_m2m_by_denom = sum(net_withdrawal_denom),
-  ) %>% mutate(
-    relative_frequency = agg_withdrawal_m2m_by_denom/sum(agg_withdrawal_m2m_by_denom),
-    Denomination=as_character(denomination)) #done by group?
-
-#sanity check
-#dat20192020denom %>% ungroup() %>% group_by(year) %>% summarise(total = sum(relative_frequency)) # all 1s, correct
-
-ggplot(dat20192020denom, aes(x=as_factor(year),
-    y = agg_withdrawal_m2m_by_denom, fill=Denomination)) +
-  geom_bar(stat="identity")
-
-ggplot(dat20192020denom, aes(x=as_factor(year),
-    y = relative_frequency, fill=Denomination)) +
-  geom_bar(stat="identity")
-
-
-# Zoom recent years
-
-ggplot(dat20192020denom %>% filter(year>=2015),
-  aes(x=as_factor(year),
-    y = agg_withdrawal_m2m_by_denom, fill=Denomination)) +
-  geom_bar(stat="identity") + ggtitle("Net Withdrawals March to May by Year")
-
-ggplot(dat20192020denom %>% filter(year>=2015),
-  aes(x=as_factor(year),
-    y = agg_withdrawal_m2m_by_denom/1e6, fill=Denomination)) +
-  geom_bar(stat="identity" ) + ggtitle("Net Withdrawals March to May by Year") + xlab("date") + ylab("Net Withdrawals (Millions CAD)") + scale_fill_manual(values = c("mediumpurple3",
-      "goldenrod3", "olivedrab4", "steelblue2", "firebrick3", "black"))
-# It looks like essentially no change in relative composition
-ggsave( paste("MarchtoMayWithdrawals.jpg", sep = ""),
-    path = paste(my_tex_folder, "weekly", sep = "/"))
-
-
-ggplot(dat20192020denom %>% filter(year>=2015),
-  aes(x=as_factor(year),
-    y = relative_frequency, fill=Denomination)) +
-  geom_bar(stat="identity") + ggtitle("Relative Withdrawals March to May by Year") + xlab("date") + ylab("Relative Withdrawals by Value") + #scale_fill_manual(values = c("mediumpurple3",
-#      "goldenrod3", "darkolivegreen4", "steelblue2", "firebrick3", #"black"))
-scale_fill_manual(values = c("mediumpurple3",
-      "goldenrod3", "olivedrab4", "steelblue2", "firebrick3", "black"))
-# It looks like essentially no change in relative composition
-ggsave( paste("MarchtoMayRelativeWithdrawals.jpg", sep = ""),
-    path = paste(my_tex_folder, "weekly", sep = "/"))
-```
-
-
-
-```{r}
-
-
-# Compare 1998 December and January vs 1999 December and January
-
-
-
-dat19982005denom = filter(dataggdenom, month==12| month==1) %>% filter (denomination!=0) %>% filter(denomination!=1000) %>%
-  mutate(year_month = as_character(as.yearmon(date))) %>%
-  group_by(year, month, year_month, denomination) %>%
-  summarise(
-    agg_withdrawal_m2m_by_denom = sum(net_withdrawal_denom),
-  ) %>% ungroup() %>% group_by(year, month, year_month) %>%
-  mutate( relative_frequency =
-    abs(agg_withdrawal_m2m_by_denom)/sum(
-      abs(agg_withdrawal_m2m_by_denom)),
-    Denomination=as_character(denomination)) %>%
-  ungroup() 
-
-
-
-ggplot(dat19982005denom, aes(x=as_factor(year_month),
-    y = agg_withdrawal_m2m_by_denom, fill=Denomination)) +
-  geom_bar(stat="identity") +  scale_fill_manual(values = c("mediumpurple3",
-      "goldenrod3", "olivedrab4", "steelblue2", "firebrick3", "black"))
-
-
-ggplot(dat19982005denom, aes(x=as_factor(year_month),
-    y = relative_frequency, fill=Denomination)) +
-  geom_bar(stat="identity") + xlab("date") + ylab("relative frequency") +  scale_fill_manual(values = c("mediumpurple3",
-      "goldenrod3", "olivedrab4", "steelblue2", "firebrick3", "black"))
-
-# It looks like essentially no change in relative composition
-ggsave( paste("December1998to2005WithdrawalsRelative.jpg", sep = ""),
-    path = paste(my_tex_folder, "weekly", sep = "/"))
-
-
-# Zoom around 2000
-
-ggplot(dat19982005denom %>% filter(year<=2004),
-  aes(x=as.factor(year_month),
-    y = agg_withdrawal_m2m_by_denom/1e6, fill=Denomination)) +
-  geom_bar(stat="identity") + ggtitle("Net Withdrawals Winters 1998-2004") +  scale_fill_manual(values = c("mediumpurple3",
-      "goldenrod3", "olivedrab4", "steelblue2", "firebrick3", "black")) + ylab("Net Withdrawals (Millions CAD)")
-
-
-ggplot(dat19982005denom %>% filter(year<=2004),
-  aes(x=as.factor(year_month),
-    y = relative_frequency, fill=Denomination)) +
-  geom_bar(stat="identity" ) + ggtitle("Net Withdrawals December and January 1998-2004") +  scale_fill_manual(values = c("mediumpurple3",
-      "goldenrod3", "olivedrab4", "steelblue2", "firebrick3", "black"))
-
-# It looks like essentially no change in relative composition
-
-
-# just december
-ggplot(dat19982005denom %>% filter(year<=2004) %>% 
-         filter(month==12),
-  aes(x=as.factor(year_month),
-    y = relative_frequency, fill=Denomination)) +
-  geom_bar(stat="identity" ) + ggtitle("Relative Frequency of Withdrawals by Denomination - December 1998-2004") + xlab("date") + ylab("relative frequency") +  scale_fill_manual(values = c("mediumpurple3",
-      "goldenrod3", "olivedrab4", "steelblue2", "firebrick3", "black"))
-
-# It looks like essentially no change in relative composition
-ggsave( paste("December1998to2005WithdrawalsRelative.jpg", sep = ""),
-    path = paste(my_tex_folder, "weekly", sep = "/"))
-
-
-# Just January
-ggplot(dat19982005denom %>% filter(year<=2004) %>% 
-         filter(month==1),
-  aes(x=as.factor(year_month),
-    y = relative_frequency, fill=Denomination)) +
-  geom_bar(stat="identity" ) + ggtitle("Relative Frequency of Withdrawals by Denomination - January 1998-2004")+ xlab("date") + ylab("relative frequency") +  scale_fill_manual(values = c("mediumpurple3",
-      "goldenrod3", "olivedrab4", "steelblue2", "firebrick3", "black"))
-
-# It looks like essentially no change in relative composition
-ggsave( paste("January1998to2005WithdrawalsRelative.jpg", sep = ""),
-    path = paste(my_tex_folder, "weekly", sep = "/"))
-
-######## Absolute
-
-# just december
-ggplot(dat19982005denom %>% filter(year<=2004) %>% 
-         filter(month==12),
-  aes(x=as.factor(year_month),
-    y = agg_withdrawal_m2m_by_denom/1e6, fill=Denomination)) +
-  geom_bar(stat="identity" ) + ggtitle("Net Withdrawals December 1998-2004")+ xlab("date") + ylab("Net Withdrawals (Millions CAD)") +  scale_fill_manual(values = c("mediumpurple3",
-      "goldenrod3", "olivedrab4", "steelblue2", "firebrick3", "black"))
-
-# It looks like essentially no change in relative composition
-ggsave( paste("December1998to2005WithdrawalsAbsolute.jpg", sep = ""),
-    path = paste(my_tex_folder, "weekly", sep = "/"))
-
-
-# Just January
-ggplot(dat19982005denom %>% filter(year<=2004) %>% 
-         filter(month==1),
-  aes(x=as.factor(year_month),
-    y = agg_withdrawal_m2m_by_denom/1e6, fill=Denomination)) +
-  geom_bar(stat="identity" ) + ggtitle("Net Withdrawals January 1998-2004") + xlab("date") + ylab("Net Withdrawals (Millions CAD)") +  scale_fill_manual(values = c("mediumpurple3",
-      "goldenrod3", "olivedrab4", "steelblue2", "firebrick3", "black"))
-
-# It looks like essentially no change in relative composition
-ggsave( paste("January1998to2005WithdrawalsAbsolute.jpg", sep = ""),
-    path = paste(my_tex_folder, "weekly", sep = "/"))
-
-```
-
-
-```{r}
-# Last thing, lets check
-# - relative increase in each denom Dec 1999 vs surrounding years' Dec
-# - vs relative increase in each deonom 2020 vs surrounding years
-##    and  
-# - relative decrease of each denom in Dec 2000 vs surrounding years
-
-
-# Calculating percent change in Relative Withdrawals December
-
-relativewithdrawalchangedec = dat19982005denom %>% filter( year <=2005  ) %>% filter(month == 12) %>% mutate(Is1999 = ifelse(year==1999,"NinetyNine", "NinetyEightandRest")) %>% group_by(month,denomination, Is1999) %>%
-  summarise(avg_relative_withdrawal_freq = mean(relative_frequency)) %>% ungroup() %>% pivot_wider(names_from=Is1999, values_from = avg_relative_withdrawal_freq   ) %>% mutate(
-    Change1999vsRest = NinetyNine - NinetyEightandRest)
-relativewithdrawalchangedec  
-
-# Repeat for January
-relativewithdrawalchangejan = dat19982005denom %>% filter( year <=2005  ) %>% filter(month == 1) %>% mutate(Is2000 = ifelse(year==2000,"TwoThnd", "Rest")) %>% group_by(month,denomination, Is2000) %>%
-  summarise(avg_relative_withdrawal_freq = mean(relative_frequency)) %>% ungroup() %>% pivot_wider(names_from=Is2000, values_from = avg_relative_withdrawal_freq   ) %>% mutate(
-    Change2000vsRest = TwoThnd - Rest)
-relativewithdrawalchangejan
-
-
-## Looking at 2000
-relativewithdrawalchangemarch = dat20192020denom %>% filter( year >=2015  ) %>%  mutate(Is2020 = ifelse(year==2020,"Tweny", "Rest")) %>% group_by(denomination, Is2020) %>%
-  summarise(avg_relative_withdrawal_freq = mean(relative_frequency)) %>% ungroup() %>% pivot_wider(names_from=Is2020, values_from = avg_relative_withdrawal_freq   ) %>% mutate(
-    Change2020vsRest = Tweny - Rest)
-relativewithdrawalchangemarch
-
-relativewithdrawalchangemarch = mutate(relativewithdrawalchangemarch, Denomination = as_character(denomination))
-
-dat20192020denom = dat20192020denom %>% mutate(Denomination = as_character(denomination))
-
-regout = lm(data = dat20192020denom %>% filter(year >=2015) %>%
-     filter(year!=2020), formula = relative_frequency ~ year:Denomination + 0)
-plot(regout, which=1:6)
-
-
-newdata = tibble(year=rep(2020,5), Denomination=as_character(
-  c(5,10,20,50,100)))
-predicted_frequency = predict(regout, newdata )
-sum(predicted_frequency)
-predict_tib = mutate(newdata, predicted_frequency = predicted_frequency)
-predict_tib = left_join(predict_tib, relativewithdrawalchangemarch)
-predict_tib = predict_tib %>% mutate(change2020vspredicted = 
-    Tweny - predicted_frequency)
-
-temppred = dat20192020denom %>% ungroup %>% filter(year >=2015) %>%
-     filter(year!=2020) %>% mutate(fitted = regout$fitted.values, residual=regout$residuals)
-
-ggplot(temppred, aes( x=year, y = relative_frequency, color=Denomination)) +
-  geom_line() + geom_point(aes(x=year, y = fitted)) #+ geom_point(aes(x=year, y =residual))
-
-
-# Yeah, it seems like just very little slope was what 
-# was best OLS
-
-temp1 = predict_tib %>% select(year, denomination, change2020vspredicted) %>% rename(change = change2020vspredicted)
-temp2 = relativewithdrawalchangedec %>% mutate(year = 1999) %>% select(year, denomination, Change1999vsRest) %>% rename(change = Change1999vsRest)
-temp3 = rbind(temp1, temp2)
-temp4 = pivot_wider(temp3, names_from = year, values_from = change)
-kable(temp4)
-ggplot(temp3 %>% mutate(Year = as_character(year), 
-    Denomination = as_character(denomination)), aes(x=Denomination, y=change, color=Year)) +
-  geom_point() + ggtitle("Change in Relative Note Withdrawal Frequency by Year During Note Events") + ylab("Change")
-ggsave( paste("ChangeinChange1999vs2020.jpg", sep = ""),
-    path = paste(my_tex_folder, "weekly", sep = "/"))
-```
-
-```{r}
-# Correlation with Crises Calculator
-# Better yet would be to contact those guys and ask for their
-# 
-
-
-crisis_mat = tibble(
-  start = c(),
-  
-  end = c()  
-)
-
-repot_crisis <- function(time) {
-  for (crisis_index in 1:nrow(crisis_mat)) {
-    if ((crisis_mat[crisis_index,1]<= time)&
-      ( time>=crisis_mat[crisis_index,1])) {
-      return(true)
-    }
-  }
-  return(false)
-}
-
-dagaggdenomcrisis = dataggdenom %>% mutate(fin_crisis_indic = repot_crisis(date))
-
-reg_crisis_cor = lm(data = dataggdenomcrisis, formula = )
-
-
 ```
 

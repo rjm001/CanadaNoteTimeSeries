@@ -21,7 +21,7 @@ knitr::opts_chunk$set(cache = TRUE)
 
 library(pacman)
 p_load(haven, tidyverse, ggplot2,sjlabelled, lubridate, 
-  readxl, xtable, gapminder, kable, kableExtra, RColorBrewer,zoo)
+  readxl, xtable, gapminder, kable, kableExtra, RColorBrewer,zoo, here)
 p_load(astsa)
 my_folder <- here("data")
 my_tex_folder = here("LiabilitiesFigures")  
@@ -31,7 +31,7 @@ datliabl=read_csv(paste(my_folder, "NICMonthEndTimeSeriesfromLiabilities.csv" , 
 
 p_load(zoo, lubridate)
 filter = dplyr::filter
-datliabl = datliabl %>% filter(year(date)>= 1998) %>% filter(year(date) <2021)
+datliabl = datliabl %>% filter(year(date)>= 1998)# %>% filter(year(date) <2021)
 datliabl = datliabl %>% mutate(net_withdrawal = NIC - dplyr::lag(NIC))
 datliabl = datliabl %>% mutate(year_mon = as.yearmon(date)) 
 
@@ -50,10 +50,11 @@ financial_events <- tibble(
 ))
 
 datagg = datliabl
-
+datagg_short = datliabl %>% filter(date <="2020-05-01")
 
 ```
 
+# First Look at Time Series
 
 
 ```{r}
@@ -66,11 +67,16 @@ plot(ts_dat)
 simple_ts = datagg %>% select(net_withdrawal)
 simple_ts = ts(simple_ts)#ts(simple_ts, start = datagg$date[1], end=datagg$date[nrow(datagg)])
 plot(simple_ts)
- 
+
+ggplot(datagg, aes(x = date, y = net_withdrawal)) + geom_line() + ggtitle("Monthly Net Withdrawals vs Time") + xlab("") + theme_classic() + ylab("Net Withdrawal (Millions CAD)") + xlab("date")
+ggsave( paste("MonthlyNetWithdrawalsFullTS.jpg", sep = ""),
+    path = paste(my_tex_folder, "monthly", sep = "/"))  
 ```
 
-Dec 1999- Jan 2000 stand out as a large spike in net withdrawals at the monthly level.   
+Dec 1999- Jan 2000 stand out as a large spike in net withdrawals at the monthly level. 2020-2021 stand out as times of an irregularly-persistent positive net withdrawals. 
 
+
+# Time Series Analysis of Frequency
 
 Looking at the periodogram, what can we conclude?
 
@@ -125,8 +131,6 @@ dat.perlog = mvspec(simple_ts, log="yes") #n.used=1200, roughly 23 years
 ```
 
 
-
-Note that the Ljung-Box statistic is a measure of the sum of the autocorrelation of the errors up to lag H. Values below the dotted line suggest there is still auto-correlation left in the errors. 
 
 ```{r}
 p_load(broom)
@@ -198,21 +202,35 @@ ggplot(dat4plottaper) + geom_line(aes(x=frequency, y =spectogram)) +
   geom_vline(xintercept = year_harmonics, color= year_multiples) + ggtitle("Tapered Periodogram With Colored, 1-Year Harmonics")
 
 
-# now redoing the sarima
+
+p_load(stargazer)
+stargazer(reg1_out)
+```
+
+
+# Classic Time Series Fits
+
+Note that these classic modeling paradigms do much better with the monthly data than the weekly data. 
+```{r}
+# Looking at SARIMA models of raw net withdrawal data
 # recall its ARIMA(p,d,q) x (P,D,Q)_s
-# So lets try(2,0,1) x (1,0,1)_{52}
+# Season (S) is 12 from above periodogram work
 acf2(simple_ts_fit) # looks like just seasonal left
-model1 = sarima(simple_ts_fit,p=5,d=0,q=0,
-    P=1,D=0,Q=0,S=54,no.constant=TRUE)
+model1 = sarima(datagg$net_withdrawal,p=5,d=0,q=0,
+    P=2,D=0,Q=0,S=12,no.constant=TRUE)
 #plot(model1)
 
-acf2(simple_ts_fit,max.lag = 60)
-model2 = sarima(simple_ts_fit,5,0,5,no.constant = TRUE) # 
-  # some of the AR and MA terms are significant
-  # annoying it won't give
+model2 = sarima(datagg$net_withdrawal,p=5,d=0,q=0,
+    P=0,D=0,Q=2,S=12,no.constant=TRUE)
+  
+model3 = sarima(datagg$net_withdrawal,p=3,d=0,q= 2, P = 1, D = 0, Q = 1, S = 12)
 
-model3 = sarima(simple_ts_fit,3,0,2,no.constant = TRUE)
-  # none of the terms here are that significant
+# Model2 is pretty good
+
+model4 = sarima(datagg$net_withdrawal,p=3,d=0,q=2,
+    P=0,D=0,Q=2,S=12,no.constant=TRUE)
+
+
 
 k=4
 # Detecting large values in residuals
@@ -221,12 +239,8 @@ ts_out =arima(simple_ts_fit, order=c(3,0,2),include.mean = FALSE)
 plot(ts_out$residuals)
 acf2(ts_out$residuals)
 
-# So, honestly, it seems like I don't even really need the 
-# Extra time series stuff. The trended one is fine
-# Just look for large residuals there!
 
 # Detecting large values in residuals
-k=4
 threshold = k*sd(simple_ts_fit)
 large_resid = which(abs(simple_ts_fit) > threshold)
 datagg$date[large_resid]
@@ -301,13 +315,12 @@ ggplot(resid_tab, aes(x=date, y = resid)) + geom_point() +
 ggsave( paste("ResidualsAfterSeasonalAdj.jpg", sep = ""),
     path = paste(my_tex_folder, "monthly", sep = "/")) 
 
-
-p_load(stargazer)
-stargazer(reg1_out)
 ```
 
-Note that, since there is no "return to trend" yet in NIC, the nonparametric fit sees the maintained pandemic behavior as the trend. 
 
+# Other Fits for Seasonal Behavior
+
+Note that, since there is no "return to trend" yet in NIC, the nonparametric fit sees the maintained pandemic behavior as the trend. Should be careful on where we fit the data.
 
 
 
@@ -328,12 +341,6 @@ summary(fit2)
 my_forecast2 = stats::predict(fit1, newdata=datagg)
 forecast_nic_spline =  tibble(date=datagg$date, fitted_net_withdrawal = my_forecast2) %>% mutate(fitted_nic = cumsum(fitted_net_withdrawal))
 
-#netwithdrawal_pred_1999_spl= datagg %>% mutate(.fitted = fit1$fitted.values) %>% filter(year == 2019)    
-#ggplot(netwithdrawal_pred_1999_spl, aes(x = date, y = .fitted)) + geom_line() + geom_line(data=netwithdrawal_pred_1999_spl,
-#  aes(x=date, y = net_withdrawal), color="red") + ylab("Net Withdrawal") + 
-#  ggtitle("Predicted Net Withdrawal in Red vs True for 1999")
-#ggsave( paste("PredictedvsTrueNetWithdrawal1999spl.jpg", sep = ""),
-#    path = paste(my_tex_folder, "monthly", sep = "/"))
 
 datagg = datagg %>% mutate(month = as.numeric(month))
 datagg=datagg %>% mutate(Year = as_character(year))
@@ -342,19 +349,50 @@ datagg=datagg %>% mutate(Year = as_character(year))
 # Now with Knotted
 #####################
 
-month_names = paste("Month", as.character(2:12), sep = " ")
+month_names = paste("Month", as.character(2:12), sep = "")
 
 gen_plots <- function(my_model, my_name) {
-
-    
-  names(my_model$coefficients) = c("Intercept", month_names, "year", "(year)^2")
-  plot1 = jtools::plot_summs(my_model, omit.coefs = 
-      c("(Intercept)", "year","(year)^2" ), ci_level = .95) + 
-    ggtitle("Weekly Fixed Effects")
+  
+  if( class(my_model)=="earth") {
+    temp = row.names(my_model$coefficients)
+    omit_these_coefs = rep("name", length(temp) - 11)
+    count = 1
+    for (my_coef_name in temp) {
+      if (!isTRUE(as.logical(grep(pattern="Month", my_coef_name)))) {
+        omit_these_coefs[count] = my_coef_name
+        count = count + 1
+      }
+    }
+  } else {
+    temp = names(my_model$coefficients)
+    omit_these_coefs = rep("name", length(temp) - 11)
+    count = 1
+    for (my_coef_name in temp) {
+      if (!isTRUE(as.logical(grep(pattern="Month", my_coef_name)))) {
+        omit_these_coefs[count] = my_coef_name
+        count = count + 1
+      }
+    }
+  }
+  if (class(my_model)!="earth") {
+    # earth package does not play well with other model output packages. too bad
+    # looks like just calls (tidy(my_model))...)
+  plot1 = jtools::plot_summs(my_model, omit.coefs = omit_these_coefs,
+    ci_level = .95) + ggtitle("Monthly Fixed Effects")
   plot1
   ggsave( paste("MonthlyCoefficientPlot", my_name, ".jpg", sep = ""),
       path = paste(my_tex_folder, "monthly", sep = "/"))
-  
+  } else {
+  plot1 = ggplot(tibble(coef_names = names(
+    my_model$coefficients[!(row.names(my_model$coefficients) %in% omit_these_coefs), ]),
+    coef_values = my_model$coefficients[!(row.names(my_model$coefficients) %in% 
+      omit_these_coefs), ]),
+      aes(x = coef_names, y = coef_values)) + geom_point() + 
+    ggtitle("Monthly Fixed Effects") + xlab("Month") + ylab("Millions CAD")
+  plot1
+  ggsave( paste("MonthlyCoefficientPlot", my_name, ".jpg", sep = ""),
+      path = paste(my_tex_folder, "monthly", sep = "/"))
+  }
   
   my_forecast = stats::predict(my_model, newdata=datagg)
   forecast_nic_func =  tibble(date=datagg$date, 
@@ -396,11 +434,11 @@ gen_plots <- function(my_model, my_name) {
   plot4
   ggsave( paste("SeasonalFitToNICspl", my_name, ".jpg", sep = ""),
       path = paste(my_tex_folder, "monthly", sep = "/"))
-  return(list(plot2, plot3, plot4))
+  return(list(plot1, plot2, plot3, plot4))
 }
 
 
-myfirstlist = gen_plots(fit1,"earth_model")
+myfirstlist = gen_plots(fit1,"earth_model") 
 mysecondlist = gen_plots(fit2,"one_knot_splines")
 myfirstlist[1]
 myfirstlist[2]
@@ -408,6 +446,7 @@ myfirstlist[3]
 mysecondlist[1]
 mysecondlist[2]
 mysecondlist[3]
+mysescondlist[4]
 
 
 ```
@@ -537,10 +576,6 @@ ggsave( paste("GarchVarwithTimings.jpg", sep = ""),
 
 
 ```
-
-
-*Another idea I can try is to measure the tail of persistance. for example, looking at the sum as the sequences is 2-15. See the length of the sequence when it peaks and when the peaks occur. Think about if that's meaningful. I wonder if anyone has done a test like this before. I feel its a very natural idea.*
-
 
 
 *Also, try the threshhold models. This data looks non-Gaussian and non-Linear. Therefore, a TARMA or SETARMA model may be appropriate
